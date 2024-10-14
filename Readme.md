@@ -1,96 +1,101 @@
 # RBAC middleware
 
-RBAC stands for "Role-Based Access Control". It is an approach to restricting system access to authorized users. In an RBAC system, permissions are not assigned directly to individual users, but to roles that users can have. These roles represent a set of privileges or access rights that define what actions a user can perform within a system or application.
+RBAC расшифровывается как «Role-Based Access Control». Это подход к ограничению доступа к системе для авторизованных пользователей. В системе RBAC права доступа назначаются не непосредственно отдельным пользователям, а ролям, которые могут быть у пользователей. Эти роли представляют собой набор привилегий или прав доступа, которые определяют, какие действия пользователь может выполнять в системе или приложении.
 
-For example, typical roles in an organization might include:
+Например, типичные роли в организации могут включать:
 
-`superuser`: Has full access to all resources and can manage other users and their roles.
-`manager`: Has access to a specific set of resources necessary to perform their job functions.
-`guest`: Has very limited access, such as read-only access to public information.
+`superuser`: Имеет полный доступ ко всем ресурсам и может управлять другими пользователями и их ролями.
+`manager`: Имеет доступ к определенному набору ресурсов, необходимых для выполнения своих должностных обязанностей.
+`guest`: Имеет очень ограниченный доступ, например, доступ к публичной информации только для чтения.
 
-RBAC allows administrators to manage system access more easily by assigning and reassigning roles, rather than setting permissions for each user individually. This makes the model scalable and flexible, especially in large organizations.
+RBAC позволяет администраторам легче управлять доступом к системе, назначая и переназначая роли, а не устанавливая разрешения для каждого пользователя в отдельности. Это делает модель масштабируемой и гибкой, особенно в крупных организациях.
 
-## Roles
+### Роли
 
-- `superuser` – allows access to read, modify and delete.
-- `manager` – allows access to read and modify.
+- `superuser` – Разрешает доступ к чтению, изменению и удалению.
+- `manager` – Разрешает доступ к чтению и изменению.
+- `guest` – Разрешает доступ к чтению определенных ресурсов.
   ...
 
-## Install
+### Особенности
+
+- Аутентификация на основе JWT
+- Контроль доступа на основе ролей
+- Настраиваемый ролевой ключ для JWT
+- Дженерики
+
+## Установка
+
+Чтобы установить библиотеку, выполните следующую команду:
 
 ```bash
 go get -u github.com/oreshkindev/rbac-middleware
 ```
 
-## Example
+### Использование
 
-The following example shows how to manage HTTP endpoints access based on roles with this library.
+Импортируйте библиотеку:
 
 ```go
 import (
-	"net/http"
-
-	"github.com/go-chi/chi/v5"
     "github.com/oreshkindev/rbac-middleware"
 )
-
-// Subject - the structure we put in the ‘sub’ field when creating a JWT token.
-type Subject struct {
-	...
-    // Role - is a field that must be necessarily present in the JWT subject.
-    // The value of this field is the role of the user for whom access will be granted.
-	Role  string `json:"role"`
-}
-
-// Define roles
-const (
-	superuser Access = "superuser"
-	manager   Access = "manager"
-)
-
-// Example of how to use Rbac middleware
-func main() {
-	// Any method to create JWT-token with claims
-	token, err := rbac.HashToken(Subject{Email: "a@a.com", Role: superuser}, 1)
-	if err != nil {
-		fmt.Println(err)
-	}
-
-    // Use https://jwt.io/ to make sure the body is properly shaped.
-	fmt.Println(token)
-
-	// Create router
-	router := chi.NewRouter()
-
-	// Create Rbac middleware with access levels for role "superuser"
-	router.With(rbac.Guard([]Access{superuser})).Get("/users", func(w http.ResponseWriter, r *http.Request) {
-		// Handle GET request
-		render.JSON(w, r, map[string]string{"message": "Welcome to Saint-Tropez"})
-	})
-
-	http.ListenAndServe(":9000", router)
-}
-
 ```
 
-Or
+Настройте секретный ключ для JWT:
 
-```golang
-	router.Route("/v1", func(r chi.Router) {
-		r.Mount("/post", router.PostHandler())
-	})
+```go
+os.Setenv("SECRET_KEY", "ваш секретный ключ")
+```
 
-    func (router *Router) PostHandler() chi.Router {
-        r := chi.NewRouter()
+или используйте окружение .env.sh
 
-        controller := router.manager.Post.PostController
+```bash
+export SECRET_KEY="ваш секретный ключ"
+```
 
-        r.With(rbac.Guard([]Rule{superuser, manager})).Post("/", controller.Create)
-        r.Get("/", controller.Find)
-        r.Get("/{id}", controller.First)
-        r.With(rbac.Guard([]Rule{superuser, manager})).Put("/{id}", controller.Update)
-        r.With(rbac.Guard([]Rule{superuser})).Delete("/{id}", controller.Delete)
+или доверьтесь openssl
 
-	    return r
-    }
+```bash
+export SECRET_KEY="$(openssl rand -base64 32)"
+```
+
+Определите роли:
+
+```go
+const (
+	superuser rbac.Access = "superuser"
+	manager   rbac.Access = "manager"
+	guest   rbac.Access = "guest"
+)
+```
+
+или
+
+```go
+const (
+    superuser rbac.Access = iota + 1
+    manager
+    guest
+)
+```
+
+Используй мидлварь в своем HTTP хендлере:
+
+```go
+http.Handle("/lk", rbac.Guard([]string{"superuser", "manager"})(ваш хендлер))
+```
+
+Создание токена:
+
+Ключ `role` - это условность. Он может быть любым на ваше усмотрение.
+
+```go
+token, err := rbac.HashToken(map[string]interface{}{"role": "superuser"}, 24*time.Hour)
+```
+
+Получение роли:
+
+```go
+role, err := rbac.GetRole[string](token)
 ```
