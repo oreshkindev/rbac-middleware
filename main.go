@@ -1,135 +1,138 @@
 package rbac
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/go-chi/render"
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var (
-	secretKey     []byte
-	secretKeyOnce sync.Once
-	roleKey       = "role" // Default role key
+type (
+	ContextKey string
+	Access     interface{}
 )
 
-func SetRoleKey(key string) {
-	roleKey = key
-}
+const (
+	PermissionKey ContextKey = "permission"
+)
 
-func getSecretKey() ([]byte, error) {
-	var err error
-	secretKeyOnce.Do(func() {
-		key := os.Getenv("SECRET_KEY")
-		if key == "" {
-			err = fmt.Errorf("SECRET_KEY environment variable is not set")
-			return
-		}
-		secretKey = []byte(key)
-	})
-	return secretKey, err
-}
-
-func Guard[T comparable](access []T) func(http.Handler) http.Handler {
-	accessMap := make(map[T]struct{})
-	for _, a := range access {
-		accessMap[a] = struct{}{}
-	}
-
+func Middleware(allowedPermissions ...Access) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString, err := GetBearer(r)
 			if err != nil {
-				render.Render(w, r, ErrUnauthorized(err))
+				errResponse := ErrUnauthorized(err)
+				errResponse.Render(w, r)
 				return
 			}
 
-			role, err := GetRole[T](tokenString)
+			claims, err := Validate(tokenString)
 			if err != nil {
-				render.Render(w, r, ErrUnauthorized(err))
+				errResponse := ErrUnauthorized(err)
+				errResponse.Render(w, r)
 				return
 			}
 
-			if _, ok := accessMap[role]; ok {
-				next.ServeHTTP(w, r)
-				return
+			permission, ok := claims["permission"]
+			switch {
+			case !ok:
+				errResponse := ErrUnauthorized(fmt.Errorf("Invalid permission claim"))
+				errResponse.Render(w, r)
+			case !hasPermission(permission, allowedPermissions):
+				errResponse := ErrInvalidRequest(fmt.Errorf("Permission denied for %v", permission))
+				errResponse.Render(w, r)
+			default:
+				ctx := context.WithValue(r.Context(), PermissionKey, permission)
+				next.ServeHTTP(w, r.WithContext(ctx))
 			}
-
-			render.Render(w, r, ErrForbidden(fmt.Errorf("permission denied for role: %v", role)))
 		})
 	}
 }
 
-func HashToken[T any](subject T, timeout time.Duration) (string, error) {
-	secretKey, err := getSecretKey()
-	if err != nil {
-		return "", err
+func Hash(subject map[string]interface{}, timeout time.Duration) (string, error) {
+	secretKey := os.Getenv("SECRET_KEY")
+	if secretKey == "" {
+		return "", fmt.Errorf("Secret key not set in environment")
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": subject,
-		"exp": time.Now().Add(timeout).Unix(),
-	})
+	claims := jwt.MapClaims{
+		"exp": time.Now().Add(timeout * time.Minute).Unix(),
+	}
+	for k, v := range subject {
+		claims[k] = v
+	}
 
-	return token.SignedString(secretKey)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secretKey))
 }
 
-func GetRole[T any](tokenString string) (T, error) {
-	var zeroValue T
-
-	secretKey, err := getSecretKey()
-	if err != nil {
-		return zeroValue, err
+func Validate(tokenString string) (jwt.MapClaims, error) {
+	secretKey := os.Getenv("SECRET_KEY")
+	if secretKey == "" {
+		return nil, fmt.Errorf("Secret key not set in environment")
 	}
 
-	parsedToken, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
 		}
-		return secretKey, nil
+		return []byte(secretKey), nil
 	})
+
 	if err != nil {
-		return zeroValue, err
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, fmt.Errorf("Invalid token: token has expired")
+		}
+		return nil, fmt.Errorf("Invalid token: %v", err)
 	}
 
-	claims, ok := parsedToken.Claims.(jwt.MapClaims)
+	if !token.Valid {
+		return nil, fmt.Errorf("Invalid token")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return zeroValue, fmt.Errorf("claims are not of type MapClaims")
+		return nil, fmt.Errorf("Invalid claims")
 	}
 
-	subject, ok := claims["sub"].(map[string]interface{})
-	if !ok {
-		return zeroValue, fmt.Errorf("subject claim is missing or invalid")
-	}
-
-	role, ok := subject[roleKey]
-	if !ok {
-		return zeroValue, fmt.Errorf("role claim is missing or invalid")
-	}
-
-	typedRole, ok := role.(T)
-	if !ok {
-		return zeroValue, fmt.Errorf("role claim is not of the expected type")
-	}
-
-	return typedRole, nil
+	return claims, nil
 }
 
 func GetBearer(r *http.Request) (string, error) {
 	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return "", fmt.Errorf("header 'Authorization' required")
+	if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+		return "", fmt.Errorf("Missing or invalid token prefix")
 	}
+	return strings.TrimPrefix(auth, "Bearer "), nil
+}
 
-	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
-		return "", fmt.Errorf("invalid token prefix: %s", auth)
+func hasPermission(userPermission interface{}, allowedPermissions []Access) bool {
+	userPermStr := toString(userPermission)
+	for _, permission := range allowedPermissions {
+		if userPermStr == toString(permission) {
+			return true
+		}
 	}
+	return false
+}
 
-	return auth[len(prefix):], nil
+func toString(v interface{}) string {
+	switch val := v.(type) {
+	case int:
+		return strconv.Itoa(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case string:
+		return val
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }

@@ -1,37 +1,43 @@
 package rbac
 
 import (
+	"encoding/json"
 	"net/http"
-
-	"github.com/go-chi/render"
 )
 
+// Renderer интерфейс для объектов, которые могут быть отрендерены в HTTP-ответ
+type Renderer interface {
+	Render(w http.ResponseWriter, r *http.Request) error
+}
+
+// SetStatus устанавливает HTTP-статус для ответа
+func SetStatus(w http.ResponseWriter, status int) {
+	w.WriteHeader(status)
+}
+
 type ErrResponse struct {
-	Err            error  `json:"-"`
-	HTTPStatusCode int    `json:"-"`
-	StatusText     string `json:"status"`
-	ErrorText      string `json:"error,omitempty"`
+	HTTPStatusCode int    `json:"code"`            // http response status code
+	Status         string `json:"status"`          // user-level status message
+	Error          string `json:"error,omitempty"` // application-level error message, for debugging
 }
 
-func ErrUnauthorized(err error) render.Renderer {
+func (err *ErrResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	SetStatus(w, err.HTTPStatusCode)
+	return json.NewEncoder(w).Encode(err)
+}
+
+func ErrInvalidRequest(err error) Renderer {
 	return &ErrResponse{
-		Err:            err,
+		HTTPStatusCode: http.StatusBadRequest,
+		Status:         "Invalid request",
+		Error:          err.Error(),
+	}
+}
+
+func ErrUnauthorized(err error) Renderer {
+	return &ErrResponse{
 		HTTPStatusCode: http.StatusUnauthorized,
-		StatusText:     "Unauthorized",
-		ErrorText:      err.Error(),
+		Status:         "Unauthorized",
+		Error:          err.Error(),
 	}
-}
-
-func ErrForbidden(err error) render.Renderer {
-	return &ErrResponse{
-		Err:            err,
-		HTTPStatusCode: http.StatusForbidden,
-		StatusText:     "Forbidden",
-		ErrorText:      err.Error(),
-	}
-}
-
-func (e *ErrResponse) Render(w http.ResponseWriter, r *http.Request) error {
-	render.Status(r, e.HTTPStatusCode)
-	return nil
 }

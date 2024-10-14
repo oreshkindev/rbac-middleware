@@ -4,37 +4,21 @@ RBAC расшифровывается как «Role-Based Access Control». Эт
 
 Например, типичные роли в организации могут включать:
 
-`superuser`: Имеет полный доступ ко всем ресурсам и может управлять другими пользователями и их ролями.
-`manager`: Имеет доступ к определенному набору ресурсов, необходимых для выполнения своих должностных обязанностей.
-`guest`: Имеет очень ограниченный доступ, например, доступ к публичной информации только для чтения.
+- `superuser`: Имеет полный доступ ко всем ресурсам и может управлять другими пользователями и их ролями.
+
+- `manager`: Имеет доступ к определенному набору ресурсов, необходимых для выполнения своих должностных обязанностей.
+
+- `guest`: Имеет очень ограниченный доступ, например, доступ к публичной информации только для чтения.
 
 RBAC позволяет администраторам легче управлять доступом к системе, назначая и переназначая роли, а не устанавливая разрешения для каждого пользователя в отдельности. Это делает модель масштабируемой и гибкой, особенно в крупных организациях.
 
-### Роли
-
-- `superuser` – Разрешает доступ к чтению, изменению и удалению.
-- `manager` – Разрешает доступ к чтению и изменению.
-- `guest` – Разрешает доступ к чтению определенных ресурсов.
-  ...
-
-### Особенности
-
-- Аутентификация на основе JWT
-- Контроль доступа на основе ролей
-- Настраиваемый ролевой ключ для JWT
-- Дженерики
-
 ## Установка
-
-Чтобы установить библиотеку, выполните следующую команду:
 
 ```bash
 go get -u github.com/oreshkindev/rbac-middleware
 ```
 
 ### Использование
-
-Импортируйте библиотеку:
 
 ```go
 import (
@@ -64,9 +48,9 @@ export SECRET_KEY="$(openssl rand -base64 32)"
 
 ```go
 const (
-	superuser rbac.Access = "superuser"
-	manager   rbac.Access = "manager"
-	guest   rbac.Access = "guest"
+	superuser   string = "superuser"
+	manager     string = "manager"
+	guest       string = "guest"
 )
 ```
 
@@ -74,7 +58,7 @@ const (
 
 ```go
 const (
-    superuser rbac.Access = iota + 1
+    superuser int64 = iota + 1
     manager
     guest
 )
@@ -83,19 +67,40 @@ const (
 Используй мидлварь в своем HTTP хендлере:
 
 ```go
-http.Handle("/lk", rbac.Guard([]string{"superuser", "manager"})(ваш хендлер))
+http.Handle("/lk", rbac.Middleware(superuser)(ваш хендлер))
+```
+
+или
+
+```go
+router := chi.NewRouter()
+
+router.With(rbac.Middleware(superuser)).Post("/", ваш хендлер)
 ```
 
 Создание токена:
 
-Ключ `role` - это условность. Он может быть любым на ваше усмотрение.
-
 ```go
-token, err := rbac.HashToken(map[string]interface{}{"role": "superuser"}, 24*time.Hour)
+token, err := rbac.Hash(map[string]interface{}{
+		"email":      c.Email,
+		"permission": c.PermissionID,
+	}, timeout)
 ```
 
-Получение роли:
+или
 
 ```go
-role, err := rbac.GetRole[string](token)
+type Claims struct {
+    Email string `json:"email"`
+    PermissionID int64 `json:"permission"`
+}
+
+func (c Claims) ToClaims() map[string]interface{} {
+    return map[string]interface{}{
+        "email": c.Email,
+        "permission": c.PermissionID,
+    }
+}
+
+token, err := rbac.Hash(UserClaims{Email: "example@...", PermissionID: 1}, timeout)
 ```
